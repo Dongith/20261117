@@ -1,173 +1,213 @@
 #!/usr/bin/env python3
-"""Newspaper front page for Tuesday 17 November 2026 world news.
+"""World News front page for Tuesday 17 November 2026.
 
-Draws a 1024x1024 PNG front page: masthead, red date line, one lead
-story and a 2x3 grid of story cards, then a footer. Fully deterministic
-(same bytes on every run): no network, no clock, no randomness.
-Writes /output/entry.png.
+Renders a deterministic 1024x1024 newspaper front page with Pillow.
+No network, no randomness, no clock: the same input always yields
+the same bytes. Run: python3 main.py  ->  writes /output/entry.png
 """
 
-import os
 from PIL import Image, ImageDraw, ImageFont
 
-PAGE_W, PAGE_H = 1024, 1024
-PAPER = (250, 247, 240)   # #faf7f0 warm off-white
-INK = (17, 17, 17)        # near-black
-NAVY = (26, 42, 74)       # #1a2a4a
-RED = (163, 29, 29)       # #a31d1d
-GREEN = (30, 107, 74)     # #1e6b4a
-OCHRE = (122, 74, 18)     # #7a4a12
-GREY = (90, 90, 90)
+# ---------------------------------------------------------------- palette
+PAPER = (250, 247, 240)
+NAVY = (26, 42, 74)
+RED = (163, 29, 29)
+INK = (34, 34, 34)
+MUTED = (90, 90, 90)
+RULE = (26, 42, 74)
 
-FONTS = "/usr/share/fonts/truetype/liberation"
+TAG_HUES = {
+    "EUROPE": (31, 78, 121),
+    "ASIA": (15, 118, 110),
+    "HEALTH": (45, 106, 46),
+    "ASIA-PACIFIC": (107, 63, 160),
+    "MIDDLE EAST": (154, 107, 0),
+    "MARKETS": (127, 29, 29),
+}
 
-SERIF_BOLD = "LiberationSerif-Bold.ttf"
-SERIF = "LiberationSerif-Regular.ttf"
-SANS_BOLD = "LiberationSans-Bold.ttf"
-SANS = "LiberationSans-Regular.ttf"
+SERIF_B = "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"
+SERIF_R = "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"
+SANS_B = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+SANS_R = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+
+W, H = 1024, 1024
+MARGIN = 46
+OUT = "/output/entry.png"
+
+DATE_LINE = "Tuesday, 17 November 2026"
+
+# ---------------------------------------------------------------- content
+LEAD = {
+    "tag": "US / IRAN",
+    "head": "US strikes Iran after Hormuz tanker attacks",
+    "body": (
+        "US warplanes hit missile sites on Qeshm Island after a tanker was "
+        "set ablaze in the Strait of Hormuz; 24 seafarers were rescued. "
+        "Trump is weighing an unverified report of a \u2018dirty bomb\u2019."
+    ),
+}
+
+CARDS = [
+    {
+        "tag": "EUROPE",
+        "head": "Ukraine hits Crimean Bridge again",
+        "body": "A road span collapsed after a Ukrainian strike; Russia "
+                "answered by hitting bridges in Kyiv.",
+    },
+    {
+        "tag": "ASIA",
+        "head": "Trump in Asia for Xi\u2013Putin summit",
+        "body": "Quad talks in Manila come first; a trilateral summit "
+                "looms in Beijing as a Nvidia chips row shadows the trip.",
+    },
+    {
+        "tag": "HEALTH",
+        "head": "US loses measles elimination status",
+        "body": "The US loses its measles elimination status for the "
+                "first time since 2000 as cases climb.",
+    },
+    {
+        "tag": "ASIA-PACIFIC",
+        "head": "Japan scrambles jets at Russian planes",
+        "body": "Japanese fighters scrambled to Russian aircraft near "
+                "Okinoshima; Tokyo lodged a formal protest.",
+    },
+    {
+        "tag": "MIDDLE EAST",
+        "head": "Gaza: winter rains deepen shelter crisis",
+        "body": "The UN warns winter rains are worsening the shelter "
+                "crisis; Britain, Australia, Canada and Italy urge more aid.",
+    },
+    {
+        "tag": "MARKETS",
+        "head": "Wall Street falls as Nvidia in focus",
+        "body": "US shares fell as investors awaited Nvidia results and "
+                "weighed the outlook for AI spending.",
+    },
+]
 
 
-def load_font(name, size):
-    return ImageFont.truetype(os.path.join(FONTS, name), size)
+# ---------------------------------------------------------------- helpers
+class Sheet:
+    """A thin wrapper around the drawing surface and its typefaces."""
+
+    def __init__(self):
+        self.img = Image.new("RGB", (W, H), PAPER)
+        self.d = ImageDraw.Draw(self.img)
+
+    def font(self, path, size):
+        return ImageFont.truetype(path, size)
+
+    def centre(self, y, text, font, fill):
+        """Draw text centred on the page; return how far down it reaches.
+
+        textbbox reports the glyph box relative to the draw origin, so
+        the advance must be the box BOTTOM (box[3]), not its height:
+        the top inset is blank font leading that the next line would
+        otherwise overlap.
+        """
+        box = self.d.textbbox((0, 0), text, font=font)
+        tw = box[2] - box[0]
+        self.d.text(((W - tw) / 2, y), text, font=font, fill=fill)
+        return box[3]
+
+    def wrap(self, text, font, width):
+        """Greedy word wrap; returns a list of lines that fit width."""
+        lines = []
+        for paragraph in text.split("\n"):
+            words = paragraph.split()
+            if not words:
+                lines.append("")
+                continue
+            cur = words[0]
+            for word in words[1:]:
+                trial = cur + " " + word
+                if self.d.textlength(trial, font=font) <= width:
+                    cur = trial
+                else:
+                    lines.append(cur)
+                    cur = word
+            lines.append(cur)
+        return lines
+
+    def para(self, x, y, text, font, width, fill, leading):
+        """Draw a wrapped paragraph; return the y just below it."""
+        for line in self.wrap(text, font, width):
+            self.d.text((x, y), line, font=font, fill=fill)
+            y += leading
+        return y
 
 
-def wrap_text(text, font, max_width):
-    """Greedy word wrap by measured pixel width."""
-    words = text.split()
-    lines, current = [], ""
-    for word in words:
-        trial = (current + " " + word).strip()
-        if font.getlength(trial) <= max_width:
-            current = trial
-        else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    return lines
+def hline(draw, y, thick, x0=MARGIN, x1=W - MARGIN, fill=RULE):
+    draw.rectangle([x0, y, x1, y + thick - 1], fill=fill)
 
 
-def draw_masthead(d, left, right):
-    y = 20
-    d.line([(left, y), (right, y)], fill=INK, width=2)
-    y += 12
-    d.text((PAGE_W // 2, y), "WORLD NEWS",
-           font=load_font(SERIF_BOLD, 88), fill=NAVY, anchor="mt")
-    y += 96
-    d.text((PAGE_W // 2, y), "Tuesday, 17 November 2026",
-           font=load_font(SERIF, 34), fill=RED, anchor="mt")
-    y += 44
-    d.line([(left, y), (right, y)], fill=INK, width=5)
-    return y + 18
-
-
-def draw_lead(d, left, width, y):
-    d.text((left, y), "MIDDLE EAST",
-           font=load_font(SANS_BOLD, 18), fill=RED, anchor="lt")
-    y += 26
-    head_font = load_font(SERIF_BOLD, 48)
-    for line in wrap_text("US strikes Iran after Hormuz tanker attacks",
-                          head_font, width):
-        d.text((left, y), line, font=head_font, fill=INK, anchor="lt")
-        y += 56
+# ---------------------------------------------------------------- sections
+def masthead(sheet):
+    y = 26
+    y += sheet.centre(y, "WORLD NEWS", sheet.font(SERIF_B, 92), NAVY)
     y += 6
-    sum_font = load_font(SANS, 23)
-    lead_sum = (
-        "Warplanes hit missile sites on Qeshm Island; a tanker ablaze, "
-        "24 seafarers rescued; Trump weighs an unverified "
-        "'dirty bomb' report."
-    )
-    for line in wrap_text(lead_sum, sum_font, width):
-        d.text((left, y), line, font=sum_font, fill=INK, anchor="lt")
-        y += 29
+    y += sheet.centre(y, DATE_LINE, sheet.font(SERIF_B, 33), RED)
+    y += 14
+    hline(sheet.d, y, 5)
+    hline(sheet.d, y + 10, 1)
+    return y + 26
+
+
+def lead_block(sheet, y):
+    f_tag = sheet.font(SANS_B, 22)
+    f_head = sheet.font(SERIF_B, 48)
+    f_body = sheet.font(SERIF_R, 26)
+    sheet.d.text((MARGIN, y), LEAD["tag"], font=f_tag, fill=RED)
+    y += 34
+    y = sheet.para(MARGIN, y, LEAD["head"], f_head, W - 2 * MARGIN, NAVY, 56)
+    y += 10
+    y = sheet.para(MARGIN, y, LEAD["body"], f_body, W - 2 * MARGIN, INK, 34)
     return y
 
 
-def draw_grid(d, left, width, top, bottom):
-    cards = [
-        ("EUROPE", NAVY,
-         "Ukraine hits Crimean Bridge again",
-         "A road span collapses into the sea; Russia answers with "
-         "strikes on Kyiv bridges."),
-        ("ASIA", RED,
-         "Trump in Asia for Xi\u2013Putin summit",
-         "Quad talks in Manila; a rare trilateral looms in Beijing as "
-         "the Nvidia spy row simmers."),
-        ("HEALTH", GREEN,
-         "US loses measles elimination status",
-         "First time since 2000, after a year of uninterrupted spread, "
-         "officials confirm."),
-        ("ASIA-PACIFIC", OCHRE,
-         "Japan scrambles jets at Russian planes",
-         "Two suspected Russian aircraft enter airspace near "
-         "Okinoshima; Tokyo protests."),
-        ("MIDDLE EAST", RED,
-         "Gaza: winter rains deepen shelter crisis",
-         "UN warns floods wreck tents and food; Britain, Australia, "
-         "Canada and Italy urge aid access."),
-        ("MARKETS", NAVY,
-         "Wall Street falls as Nvidia in focus",
-         "AI and tech shares drag indexes lower; Apple services hit by "
-         "outages."),
-    ]
-    tag_font = load_font(SANS_BOLD, 18)
-    # 27px: every card headline fits on one line (no orphaned word on a
-    # second line — the two longest are 447.7 and 454.1px vs 458px wide).
-    head_font = load_font(SERIF_BOLD, 27)
-    sum_font = load_font(SANS, 19)
-
-    gutter = 28
-    col_w = (width - gutter) // 2
-    col_x = [left, left + col_w + gutter]
-    row_gap = 14
-    row_h = (bottom - top - 2 * row_gap) // 3
-
-    for row in range(3):
-        row_top = top + row * (row_h + row_gap)
-        for col in range(2):
-            tag, color, headline, summary = cards[row * 2 + col]
-            cx = col_x[col]
-            d.line([(cx, row_top), (cx + col_w, row_top)], fill=INK, width=2)
-            cy = row_top + 10
-            d.text((cx, cy), tag, font=tag_font, fill=color, anchor="lt")
-            cy += 26
-            for line in wrap_text(headline, head_font, col_w):
-                d.text((cx, cy), line, font=head_font, fill=INK, anchor="lt")
-                cy += 33
-            cy += 4
-            for line in wrap_text(summary, sum_font, col_w):
-                d.text((cx, cy), line, font=sum_font, fill=GREY, anchor="lt")
-                cy += 24
+def card(sheet, x, y, w, h, story):
+    f_tag = sheet.font(SANS_B, 18)
+    f_head = sheet.font(SERIF_B, 29)
+    f_body = sheet.font(SERIF_R, 20)
+    hue = TAG_HUES[story["tag"]]
+    sheet.d.text((x, y), story["tag"], font=f_tag, fill=hue)
+    cy = y + 28
+    cy = sheet.para(x, cy, story["head"], f_head, w, NAVY, 35)
+    cy = sheet.para(x, cy + 4, story["body"], f_body, w, INK, 26)
+    return y + h
 
 
-def draw_footer(d, left, right, rule_y):
-    d.line([(left, rule_y), (right, rule_y)], fill=INK, width=2)
-    d.text((PAGE_W // 2, rule_y + 10),
-           "Tuesday, 17 November 2026 \u00b7 Sources: Reuters, AP, AFP",
-           font=load_font(SANS, 17), fill=GREY, anchor="mt")
+def grid(sheet, y):
+    col_w = (W - 2 * MARGIN - 24) // 2
+    row_h = 150
+    gap = 16
+    for i, story in enumerate(CARDS):
+        col = i % 2
+        row = i // 2
+        x = MARGIN + col * (col_w + 24)
+        card(sheet, x, y + row * (row_h + gap), col_w, row_h, story)
+    return y + 3 * row_h + 2 * gap
 
 
+def footer(sheet):
+    f = sheet.font(SANS_R, 18)
+    text = DATE_LINE + " \u00b7 Sources: Reuters, AP, AFP"
+    box = sheet.d.textbbox((0, 0), text, font=f)
+    tw = box[2] - box[0]
+    sheet.d.text(((W - tw) / 2, H - 34), text, font=f, fill=MUTED)
+
+
+# ---------------------------------------------------------------- main
 def main():
-    img = Image.new("RGB", (PAGE_W, PAGE_H), PAPER)
-    d = ImageDraw.Draw(img)
-
-    margin = 40
-    left = margin
-    right = PAGE_W - margin
-    content_w = right - left
-
-    y = draw_masthead(d, left, right)
-    y = draw_lead(d, left, content_w, y)
-
-    footer_rule_y = 966
-    grid_top = y + 16
-    grid_bottom = footer_rule_y - 14
-    draw_grid(d, left, content_w, grid_top, grid_bottom)
-    draw_footer(d, left, right, footer_rule_y)
-
-    os.makedirs("/output", exist_ok=True)
-    img.save("/output/entry.png", format="PNG")
+    sheet = Sheet()
+    y = masthead(sheet)
+    y = lead_block(sheet, y)
+    y += 18
+    hline(sheet.d, y, 1)
+    y = grid(sheet, y + 18)
+    footer(sheet)
+    sheet.img.save(OUT, format="PNG")
 
 
 if __name__ == "__main__":
